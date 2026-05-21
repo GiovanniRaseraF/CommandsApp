@@ -19,12 +19,12 @@ file(GLOB SOURCES "src/*.cpp")
 file(GLOB HEADERS "src/*.h")
 
 # Build target
-if(APPLE)
-    # Build as a macOS app bundle so GUI renders correctly without terminal blocking
-    add_executable(CommandsApp MACOSX_BUNDLE ${SOURCES} ${HEADERS})
-else()
-    add_executable(CommandsApp ${SOURCES} ${HEADERS})
-endif()
+# if(APPLE)
+#     # Build as a macOS app bundle so GUI renders correctly without terminal blocking
+#     add_executable(CommandsApp MACOSX_BUNDLE ${SOURCES} ${HEADERS})
+# else()
+add_executable(CommandsApp ${SOURCES} ${HEADERS})
+# endif()
 
 # Set up include directories
 target_include_directories(CommandsApp PRIVATE src)
