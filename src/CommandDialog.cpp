@@ -16,9 +16,14 @@ CommandDialog::CommandDialog(wxWindow* parent, const wxString& title, const wxSt
     mainSizer->Add(label, 0, wxALL | wxALIGN_LEFT, 10);
 
     // Multi-line Text Box for the command string
-    // wxTE_MULTILINE allows multiple lines, wxTE_DONTWRAP prevents automatic wrapping for command precision
-    m_commandInput = new wxTextCtrl(this, wxID_ANY, initialValue, wxDefaultPosition, wxDefaultSize, wxTE_MULTILINE | wxTE_DONTWRAP);
+    // wxTE_MULTILINE allows multiple lines, wxTE_DONTWRAP prevents automatic wrapping for command precision.
+    // wxTE_PROCESS_ENTER captures the Return/Enter key so the dialog submits automatically.
+    m_commandInput = new wxTextCtrl(this, wxID_ANY, initialValue, wxDefaultPosition, wxDefaultSize, wxTE_MULTILINE | wxTE_DONTWRAP | wxTE_PROCESS_ENTER);
     m_commandInput->SetFont(wxFont(wxFontInfo(11).FaceName("Courier New"))); // Monospaced font for code styling
+    
+    // Bind Enter key press to OnOK to commit changes automatically
+    m_commandInput->Bind(wxEVT_TEXT_ENTER, &CommandDialog::OnOK, this);
+
     mainSizer->Add(m_commandInput, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 10);
 
     // Standard dialog buttons (OK and Cancel) in platform-specific order
