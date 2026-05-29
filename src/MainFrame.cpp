@@ -13,8 +13,9 @@ wxBEGIN_EVENT_TABLE(MainFrame, wxFrame)
 wxEND_EVENT_TABLE()
 
 MainFrame::MainFrame(const wxString& title)
-    : wxFrame(NULL, wxID_ANY, title, wxDefaultPosition, wxSize(600, 600)),
-      m_statusTimer(this, TIMER_ID)
+    : wxFrame(NULL, wxID_ANY, title, wxDefaultPosition, wxSize(650, 650)),
+      m_statusTimer(this, TIMER_ID),
+      m_terminalTimer(this, TERMINAL_TIMER_ID)
 {
     // Load existing commands from SQLite
     m_commandManager.Load();
@@ -98,11 +99,23 @@ MainFrame::MainFrame(const wxString& title)
     m_noGroupSelectedText->SetForegroundColour(wxColour(120, 120, 120));
     rightSizer->Add(m_noGroupSelectedText, 1, wxALIGN_CENTER | wxALL, 20);
 
-    // Selected Group Header
+    // Selected Group Header Title & Toggle button layout row
+    wxBoxSizer* headerRowSizer = new wxBoxSizer(wxHORIZONTAL);
+    
     m_groupTitleLabel = new wxStaticText(rightPanel, wxID_ANY, "");
     m_groupTitleLabel->SetFont(wxFont(wxFontInfo(13).Bold()));
-    rightSizer->Add(m_groupTitleLabel, 0, wxALL | wxALIGN_LEFT, 10);
-    m_groupTitleLabel->Hide(); // Hidden initially
+    headerRowSizer->Add(m_groupTitleLabel, 1, wxEXPAND | wxALIGN_CENTER_VERTICAL | wxRIGHT, 10);
+    
+    m_toggleTerminalBtn = new wxButton(rightPanel, wxID_ANY, "📺 Show Terminal", wxDefaultPosition, wxDefaultSize);
+    m_toggleTerminalBtn->SetFont(wxFont(wxFontInfo(10).Bold()));
+    m_toggleTerminalBtn->Bind(wxEVT_BUTTON, &MainFrame::OnToggleTerminal, this);
+    headerRowSizer->Add(m_toggleTerminalBtn, 0, wxALIGN_CENTER_VERTICAL);
+    
+    rightSizer->Add(headerRowSizer, 0, wxEXPAND | wxALL, 10);
+    
+    // Hide header elements initially
+    m_groupTitleLabel->Hide();
+    m_toggleTerminalBtn->Hide();
 
     // Selected Group Commands Scrolled List
     m_groupCommandsScrollWin = new wxScrolledWindow(rightPanel, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVSCROLL);
@@ -111,6 +124,49 @@ MainFrame::MainFrame(const wxString& title)
     m_groupCommandsScrollWin->SetSizer(m_groupCommandsListSizer);
     rightSizer->Add(m_groupCommandsScrollWin, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 5);
     m_groupCommandsScrollWin->Hide(); // Hidden initially
+
+    // ----------------------------------------------------
+    // TAB 2: Collapsible Terminal Panel Console
+    // ----------------------------------------------------
+    m_terminalPanel = new wxPanel(rightPanel, wxID_ANY);
+    wxBoxSizer* termSizer = new wxBoxSizer(wxVERTICAL);
+    m_terminalPanel->SetSizer(termSizer);
+
+    // Terminal console window (multiline, read-only)
+    m_terminalConsole = new wxTextCtrl(m_terminalPanel, wxID_ANY, "", wxDefaultPosition, wxSize(-1, 140), wxTE_MULTILINE | wxTE_READONLY | wxTE_RICH2);
+    
+    // Monospace hacking theme
+    wxFont termFont(wxFontInfo(10).FaceName("Courier New"));
+    if (!termFont.IsOk()) {
+        termFont = wxFont(wxFontInfo(10).Family(wxFONTFAMILY_TELETYPE));
+    }
+    m_terminalConsole->SetFont(termFont);
+    m_terminalConsole->SetBackgroundColour(wxColour(15, 15, 15)); // Dark background
+    m_terminalConsole->SetForegroundColour(wxColour(51, 255, 51)); // Bright green
+    
+    termSizer->Add(m_terminalConsole, 1, wxEXPAND | wxLEFT | wxRIGHT, 5);
+
+    // Terminal Input & Actions row
+    wxBoxSizer* termInputRow = new wxBoxSizer(wxHORIZONTAL);
+    
+    wxStaticText* promptChar = new wxStaticText(m_terminalPanel, wxID_ANY, " $ ");
+    promptChar->SetFont(wxFont(wxFontInfo(11).Bold()));
+    termInputRow->Add(promptChar, 0, wxALIGN_CENTER_VERTICAL);
+
+    m_terminalInput = new wxTextCtrl(m_terminalPanel, wxID_ANY, "", wxDefaultPosition, wxDefaultSize, wxTE_PROCESS_ENTER);
+    m_terminalInput->SetFont(termFont);
+    m_terminalInput->Bind(wxEVT_TEXT_ENTER, &MainFrame::OnTerminalInputEnter, this);
+    termInputRow->Add(m_terminalInput, 1, wxEXPAND | wxALIGN_CENTER_VERTICAL | wxRIGHT, 5);
+
+    m_clearTerminalBtn = new wxButton(m_terminalPanel, wxID_ANY, "🗑️ Clear", wxDefaultPosition, wxSize(70, -1));
+    m_clearTerminalBtn->SetFont(wxFont(wxFontInfo(9)));
+    m_clearTerminalBtn->Bind(wxEVT_BUTTON, &MainFrame::OnTerminalClear, this);
+    termInputRow->Add(m_clearTerminalBtn, 0, wxALIGN_CENTER_VERTICAL);
+
+    termSizer->Add(termInputRow, 0, wxEXPAND | wxALL, 5);
+    
+    rightSizer->Add(m_terminalPanel, 0, wxEXPAND | wxTOP | wxBOTTOM, 5);
+    m_terminalPanel->Hide(); // Hidden initially
 
     // Selected Group "Add Commands to Group" Action button
     m_addCommandsToGroupBtn = new wxButton(rightPanel, wxID_ANY, "➕ Add Commands to Group");
@@ -154,10 +210,28 @@ MainFrame::MainFrame(const wxString& title)
         }
     });
 
+    // Dynamic timer binding for output polling
+    m_terminalTimer.Bind(wxEVT_TIMER, &MainFrame::OnTerminalTimer, this);
+    m_terminalTimer.Start(150); // poll child streams every 150ms
+
     // Populate initial views
     PopulateList();
     PopulateGroupsList();
     PopulateGroupCommandsList();
+}
+
+MainFrame::~MainFrame() {
+    // Systematic cleanup of background terminal processes to avoid zombies
+    m_terminalTimer.Stop();
+    for (auto& pair : m_groupTerminals) {
+        auto& term = pair.second;
+        if (term.process) {
+            term.process->Detach();
+            wxKill(term.pid, wxSIGKILL);
+            delete term.process;
+            term.process = nullptr;
+        }
+    }
 }
 
 static bool FuzzyMatch(const std::string& query, const std::string& target) {
@@ -390,15 +464,27 @@ void MainFrame::PopulateGroupCommandsList() {
     if (m_selectedGroupId == -1) {
         m_noGroupSelectedText->Show();
         m_groupTitleLabel->Hide();
+        m_toggleTerminalBtn->Hide();
         m_groupCommandsScrollWin->Hide();
+        m_terminalPanel->Hide();
         m_addCommandsToGroupBtn->Hide();
     } else {
         m_noGroupSelectedText->Hide();
         
         m_groupTitleLabel->SetLabel("📁 " + wxString::FromUTF8(m_selectedGroupName));
         m_groupTitleLabel->Show();
+        m_toggleTerminalBtn->Show();
         m_groupCommandsScrollWin->Show();
         m_addCommandsToGroupBtn->Show();
+
+        // Load selected group terminal log into console
+        auto it = m_groupTerminals.find(m_selectedGroupId);
+        if (it != m_groupTerminals.end()) {
+            m_terminalConsole->SetValue(it->second.outputLog);
+            m_terminalConsole->ShowPosition(m_terminalConsole->GetLastPosition());
+        } else {
+            m_terminalConsole->Clear();
+        }
 
         std::vector<CommandItem> commands = m_commandManager.GetCommandsInGroup(m_selectedGroupId);
 
@@ -415,6 +501,11 @@ void MainFrame::PopulateGroupCommandsList() {
             cmdBtn->SetFont(monoFont);
             cmdBtn->SetToolTip("Click to copy to clipboard");
 
+            // Run command button
+            wxButton* runBtn = new wxButton(m_groupCommandsScrollWin, wxID_ANY, "▶️ Run", wxDefaultPosition, wxSize(65, 32));
+            runBtn->SetFont(wxFont(wxFontInfo(10).Bold()));
+            runBtn->SetToolTip("Run command in persistent group terminal");
+
             // Remove from group button
             wxButton* removeBtn = new wxButton(m_groupCommandsScrollWin, wxID_ANY, "❌", wxDefaultPosition, wxSize(32, 32));
             removeBtn->SetToolTip("Remove from this group");
@@ -424,11 +515,16 @@ void MainFrame::PopulateGroupCommandsList() {
                 this->CopyToClipboardDirectly(cmdText);
             });
 
+            runBtn->Bind(wxEVT_BUTTON, [this, cmdText = cmd.text](wxCommandEvent& event) {
+                this->RunCommandInTerminal(cmdText);
+            });
+
             removeBtn->Bind(wxEVT_BUTTON, [this, cmd](wxCommandEvent& event) {
                 this->RemoveCommandFromGroupDirectly(cmd.id, cmd.text);
             });
 
             rowSizer->Add(cmdBtn, 1, wxEXPAND | wxRIGHT, 6);
+            rowSizer->Add(runBtn, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 6);
             rowSizer->Add(removeBtn, 0, wxALIGN_CENTER_VERTICAL);
 
             m_groupCommandsListSizer->Add(rowSizer, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 6);
@@ -543,4 +639,151 @@ void MainFrame::RemoveCommandFromGroupDirectly(int64_t commandId, const std::str
             m_statusTimer.StartOnce(2000);
         }
     }
+}
+
+void MainFrame::StartTerminalProcess(int64_t groupId) {
+    auto& term = m_groupTerminals[groupId];
+    if (term.process) {
+        return; // Already running
+    }
+
+    term.groupId = groupId;
+    term.process = new wxProcess(this);
+    term.process->Redirect();
+
+    // Determine cross-platform standard shell path
+    std::string shellPath = "/bin/zsh";
+    if (!wxFileExists(shellPath)) {
+        shellPath = "/bin/bash";
+    }
+    if (!wxFileExists(shellPath)) {
+        shellPath = "/bin/sh";
+    }
+
+    term.pid = wxExecute(shellPath, wxEXEC_ASYNC, term.process);
+    if (term.pid <= 0) {
+        term.outputLog += "⚠️ Failed to launch terminal shell: " + shellPath + "\n";
+        delete term.process;
+        term.process = nullptr;
+    } else {
+        term.outputLog += "⚡ Connected to persistent terminal (" + shellPath + ")\n";
+    }
+}
+
+void MainFrame::RunCommandInTerminal(const std::string& cmdText) {
+    if (m_selectedGroupId == -1) return;
+
+    // Start background shell if not already active
+    StartTerminalProcess(m_selectedGroupId);
+
+    auto& term = m_groupTerminals[m_selectedGroupId];
+    if (!term.process) {
+        wxMessageBox("Unable to run command. The terminal process is not active.", "Error", wxOK | wxICON_ERROR, this);
+        return;
+    }
+
+    wxOutputStream* out = term.process->GetOutputStream();
+    if (out) {
+        // Echo command to log visually
+        term.outputLog += "\n$ " + wxString::FromUTF8(cmdText) + "\n";
+        m_terminalConsole->SetValue(term.outputLog);
+        m_terminalConsole->ShowPosition(m_terminalConsole->GetLastPosition());
+
+        std::string cmdToSend = cmdText + "\n";
+        out->Write(cmdToSend.c_str(), cmdToSend.length());
+        out->Sync(); // Flush standard input stream to child process
+
+        m_statusText->SetLabel("▶️ Executing: \"" + wxString::FromUTF8(cmdText).Left(30) + "...\"");
+        m_statusText->SetForegroundColour(wxColour(0, 122, 255)); // Apple Blue Accent
+        m_statusTimer.StartOnce(2000);
+    }
+}
+
+void MainFrame::OnTerminalTimer(wxTimerEvent& event) {
+    bool anyUpdate = false;
+    for (auto& pair : m_groupTerminals) {
+        auto& term = pair.second;
+        if (!term.process) continue;
+
+        bool updatedThisTerm = false;
+        
+        // Read stdout
+        while (term.process->IsInputAvailable()) {
+            char buf[4096];
+            wxInputStream* in = term.process->GetInputStream();
+            if (!in) break;
+            in->Read(buf, sizeof(buf) - 1);
+            size_t count = in->LastRead();
+            if (count == 0) break;
+            buf[count] = '\0';
+            term.outputLog += wxString::FromUTF8(buf);
+            updatedThisTerm = true;
+        }
+
+        // Read stderr
+        while (term.process->IsErrorAvailable()) {
+            char buf[4096];
+            wxInputStream* err = term.process->GetErrorStream();
+            if (!err) break;
+            err->Read(buf, sizeof(buf) - 1);
+            size_t count = err->LastRead();
+            if (count == 0) break;
+            buf[count] = '\0';
+            term.outputLog += wxString::FromUTF8(buf);
+            updatedThisTerm = true;
+        }
+
+        // Check if process terminated
+        if (term.pid > 0 && !wxProcess::Exists(term.pid)) {
+            term.outputLog += "\n⚡ Terminal session ended.\n";
+            term.process = nullptr;
+            term.pid = 0;
+            updatedThisTerm = true;
+        }
+
+        if (updatedThisTerm && pair.first == m_selectedGroupId) {
+            anyUpdate = true;
+        }
+    }
+
+    if (anyUpdate) {
+        auto it = m_groupTerminals.find(m_selectedGroupId);
+        if (it != m_groupTerminals.end()) {
+            m_terminalConsole->SetValue(it->second.outputLog);
+            m_terminalConsole->ShowPosition(m_terminalConsole->GetLastPosition());
+        }
+    }
+}
+
+void MainFrame::OnTerminalInputEnter(wxCommandEvent& event) {
+    if (m_selectedGroupId == -1) return;
+    
+    wxString rawCmd = m_terminalInput->GetValue();
+    std::string cmdText = std::string(rawCmd.utf8_str());
+    
+    if (cmdText.empty()) return;
+
+    RunCommandInTerminal(cmdText);
+    m_terminalInput->Clear();
+}
+
+void MainFrame::OnTerminalClear(wxCommandEvent& event) {
+    if (m_selectedGroupId == -1) return;
+    
+    auto it = m_groupTerminals.find(m_selectedGroupId);
+    if (it != m_groupTerminals.end()) {
+        it->second.outputLog.Clear();
+        m_terminalConsole->Clear();
+    }
+}
+
+void MainFrame::OnToggleTerminal(wxCommandEvent& event) {
+    if (m_selectedGroupId == -1) return;
+    
+    bool isShown = m_terminalPanel->IsShown();
+    m_terminalPanel->Show(!isShown);
+    m_toggleTerminalBtn->SetLabel(isShown ? "📺 Show Terminal" : "📺 Hide Terminal");
+    
+    // Refresh parent layouts to account for panel size shifts
+    m_terminalPanel->GetParent()->Layout();
 }

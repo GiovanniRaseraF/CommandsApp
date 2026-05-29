@@ -6,14 +6,24 @@
 #include <wx/scrolwin.h>
 #include <wx/notebook.h>
 #include <wx/splitter.h>
+#include <wx/process.h>
 #include <vector>
 #include <string>
+#include <map>
 #include "CommandManager.h"
+
+struct GroupTerminal {
+    int64_t groupId;
+    std::string groupName;
+    wxProcess* process = nullptr;
+    long pid = 0;
+    wxString outputLog;
+};
 
 class MainFrame : public wxFrame {
 public:
     MainFrame(const wxString& title);
-    ~MainFrame() = default;
+    ~MainFrame();
 
 private:
     CommandManager m_commandManager;
@@ -38,16 +48,26 @@ private:
     wxButton* m_addCommandsToGroupBtn;
     wxStaticText* m_noGroupSelectedText;
 
+    // --- Tab 2: Group Terminal Console Controls ---
+    wxPanel* m_terminalPanel;
+    wxTextCtrl* m_terminalConsole;
+    wxTextCtrl* m_terminalInput;
+    wxButton* m_toggleTerminalBtn;
+    wxButton* m_clearTerminalBtn;
+
     // --- Common Controls ---
     wxStaticText* m_statusText;
 
-    // Timer for clearing the "Copied!" notification
+    // Timers
     wxTimer m_statusTimer;
+    wxTimer m_terminalTimer;
     static const int TIMER_ID = 10001;
+    static const int TERMINAL_TIMER_ID = 10002;
 
     // --- State ---
     int64_t m_selectedGroupId = -1;
     std::string m_selectedGroupName = "";
+    std::map<int64_t, GroupTerminal> m_groupTerminals;
 
     // --- UI Updating Helpers ---
     void PopulateList();
@@ -59,12 +79,20 @@ private:
     void DeleteGroupDirectly(int64_t groupId, const std::string& groupName);
     void RemoveCommandFromGroupDirectly(int64_t commandId, const std::string& commandText);
 
+    // --- Terminal Helpers ---
+    void StartTerminalProcess(int64_t groupId);
+    void RunCommandInTerminal(const std::string& cmdText);
+
     // --- Event Handlers ---
     void OnSearchChange(wxCommandEvent& event);
     void OnAdd(wxCommandEvent& event);
     void OnTimer(wxTimerEvent& event);
     void OnCreateGroup(wxCommandEvent& event);
     void OnAddCommandsToGroup(wxCommandEvent& event);
+    void OnTerminalTimer(wxTimerEvent& event);
+    void OnTerminalInputEnter(wxCommandEvent& event);
+    void OnTerminalClear(wxCommandEvent& event);
+    void OnToggleTerminal(wxCommandEvent& event);
 
     wxDECLARE_EVENT_TABLE();
 };
